@@ -1,0 +1,17 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: fdsi-gp03-backend
+
+# Configuración del proveedor LLM (Gemini). Se completa a partir del Hito 2.
+llm:
+  provider: gemini
+  api-key: ${GEMINI_API_KEY:}
+  model: gemini-2.0-flash
+
+# CORS para el frontend en desarrollo local
+app:
+  cors:
+    allowed-origin: ${FRONTEND_URL:http://localhost:5173}
