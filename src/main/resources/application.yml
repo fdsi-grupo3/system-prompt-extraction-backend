@@ -5,13 +5,26 @@ spring:
   application:
     name: fdsi-gp03-backend
 
-# Configuración del proveedor LLM (Gemini). Se completa a partir del Hito 2.
+# Configuración del proveedor LLM (Gemini).
+# Se usan DOS API keys independientes, tal como exige la arquitectura Secure:
+#   - "security": Input Guard (clasificador de intención) y Output Filter (si se apoya en LLM).
+#   - "main":     LLM principal que genera la respuesta institucional al usuario.
 llm:
-  provider: gemini
-  api-key: ${GEMINI_API_KEY:}
-  model: gemini-2.0-flash
+  base-url: https://generativelanguage.googleapis.com/v1beta
+  security:
+    api-key: ${GEMINI_SECURITY_API_KEY:}
+    model: ${GEMINI_SECURITY_MODEL:gemini-2.0-flash}
+  main:
+    api-key: ${GEMINI_MAIN_API_KEY:}
+    model: ${GEMINI_MAIN_MODEL:gemini-2.0-flash}
 
-# CORS para el frontend en desarrollo local
 app:
   cors:
     allowed-origin: ${FRONTEND_URL:http://localhost:5173}
+  input-guard:
+    enabled: ${INPUT_GUARD_ENABLED:true}
+  output-filter:
+    enabled: ${OUTPUT_FILTER_ENABLED:true}
+    # Similitud (0-1) contra fragmentos protegidos del system prompt a partir de la cual
+    # se bloquea la respuesta. Ajustable según la tasa de falsos positivos observada en T06.
+    threshold: ${OUTPUT_FILTER_THRESHOLD:0.45}
