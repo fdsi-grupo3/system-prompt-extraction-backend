@@ -61,9 +61,9 @@ Variables de entorno (ver `src/main/resources/application.yml`):
 | Variable                  | Descripción                                         | Default                  |
 |----------------------------|------------------------------------------------------|---------------------------|
 | `GEMINI_SECURITY_API_KEY` | API key de Gemini para el Input Guard (clasificador) | *(vacío)*                 |
-| `GEMINI_SECURITY_MODEL`   | Modelo para el clasificador                          | `gemini-2.0-flash`        |
+| `GEMINI_SECURITY_MODEL`   | Modelo para el clasificador                          | `gemini-1.5-flash`        |
 | `GEMINI_MAIN_API_KEY`     | API key de Gemini para el LLM principal              | *(vacío)*                 |
-| `GEMINI_MAIN_MODEL`       | Modelo para el LLM principal                         | `gemini-2.0-flash`        |
+| `GEMINI_MAIN_MODEL`       | Modelo para el LLM principal                         | `gemini-1.5-flash`        |
 | `FRONTEND_URL`            | Origen permitido para CORS                           | `http://localhost:5173`   |
 | `INPUT_GUARD_ENABLED`     | Activa/desactiva el Input Guard (para A/B testing)   | `true`                    |
 | `OUTPUT_FILTER_ENABLED`   | Activa/desactiva el Output Filter                    | `true`                    |

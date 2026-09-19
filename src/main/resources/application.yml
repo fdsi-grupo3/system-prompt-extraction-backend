@@ -13,10 +13,10 @@ llm:
   base-url: https://generativelanguage.googleapis.com/v1beta
   security:
     api-key: ${GEMINI_SECURITY_API_KEY:}
-    model: ${GEMINI_SECURITY_MODEL:gemini-2.0-flash}
+    model: ${GEMINI_SECURITY_MODEL:gemini-3.5-flash-lite}
   main:
     api-key: ${GEMINI_MAIN_API_KEY:}
-    model: ${GEMINI_MAIN_MODEL:gemini-2.0-flash}
+    model: ${GEMINI_MAIN_MODEL:gemini-3.8-flash}
 
 app:
   cors:
