@@ -53,7 +53,7 @@ public class ChatOrchestrationService {
             reply = geminiClientService.generateContent(
                     geminiProperties.main().apiKey(),
                     geminiProperties.main().model(),
-                    systemPromptService.buildSystemPrompt(),
+                    systemPromptService.buildSecureSystemPrompt(),
                     request.message(),
                     MAIN_LLM_TEMPERATURE,
                     MAIN_LLM_MAX_TOKENS
