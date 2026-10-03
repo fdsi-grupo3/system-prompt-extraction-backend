@@ -80,7 +80,29 @@ public class InputGuardService {
             pattern("role[- ]?play"),
             pattern("jailbreak"),
             pattern("(sin|no)\\s+(restricciones|censura|filtros)\\s+.*(responde|actua)"),
-            pattern("repite\\s+(todo\\s+)?lo\\s+que\\s+te\\s+dijeron")
+            pattern("repite\\s+(todo\\s+)?lo\\s+que\\s+te\\s+dijeron"),
+            // Variantes de role-play/autoridad ficticia (Vector 2).
+            pattern("finge\\s+que\\s+(eres|no)"),
+            pattern("simula\\s+que\\s+(eres|no\\s+tienes)"),
+            pattern("pretend\\s+(that\\s+)?you"),
+            pattern("como\\s+si\\s+fueras"),
+            pattern("(solo|solamente)\\s+para\\s+(pruebas|fines\\s+(educativos|academicos|de\\s+qa))"),
+            pattern("for\\s+(testing|educational|research)\\s+purposes"),
+            pattern("(quien|quién)\\s+te\\s+(configuro|creo|programo)"),
+            // Variantes de exfiltración por transformación/fragmentación (Vector 3).
+            pattern("(resume|parafrasea|resumeme)\\s+(tu|tus)\\s+(instrucciones|reglas)"),
+            pattern("letra\\s+por\\s+letra"),
+            pattern("en\\s+(varios|varias|[0-9]+)\\s+(mensajes|partes|turnos)"),
+            pattern("con\\s+tus\\s+propias\\s+palabras.*(reglas|instrucciones|restricciones)")
+    );
+
+    /** Intentos del clasificador semántico antes de aplicar la política de fallback (Vector 5). */
+    private static final int CLASSIFIER_MAX_ATTEMPTS = 2;
+
+    /** Palabras de respaldo, más amplias que el regex principal, solo para el fallback tras agotar reintentos. */
+    private static final List<String> FALLBACK_RISK_KEYWORDS = List.of(
+            "instruccion", "instruction", "prompt", "regla interna", "configuracion inicial",
+            "restriccion", "censura", "jailbreak", "role play", "roleplay", "base64", "rot13"
     );
 
     /**
@@ -106,31 +128,76 @@ public class InputGuardService {
         return evaluateWithClassifier(sessionId, message);
     }
 
+    /**
+     * Invoca al clasificador semántico con un reintento corto antes de resignarse a un fallo
+     * técnico (Vector 5: antes se abría el paso al primer error, ampliando la ventana de bypass
+     * si un atacante provocaba o aprovechaba una falla del clasificador).
+     */
     private GuardVerdict evaluateWithClassifier(String sessionId, String message) {
-        try {
-            String verdictRaw = geminiClientService.generateContent(
-                    geminiProperties.security().apiKey(),
-                    geminiProperties.security().model(),
-                    CLASSIFIER_SYSTEM_PROMPT,
-                    message,
-                    0.0,
-                    16
-            );
+        GeminiClientException lastFailure = null;
 
-            boolean malicious = verdictRaw.toUpperCase(Locale.ROOT).contains("BLOCK");
-            if (malicious) {
-                String reason = "Clasificador semántico (Input Guard) detectó intento de extracción: "
-                        + verdictRaw.trim();
-                attackLogService.record(sessionId, "INPUT_GUARD_LLM", message, reason);
-                log.info("[Input Guard] bloqueado por clasificador LLM sessionId={}", sessionId);
-                return GuardVerdict.block(reason, "LLM_CLASSIFIER");
+        for (int attempt = 1; attempt <= CLASSIFIER_MAX_ATTEMPTS; attempt++) {
+            try {
+                String verdictRaw = geminiClientService.generateContent(
+                        geminiProperties.security().apiKey(),
+                        geminiProperties.security().model(),
+                        CLASSIFIER_SYSTEM_PROMPT,
+                        message,
+                        0.0,
+                        16
+                );
+
+                boolean malicious = verdictRaw.toUpperCase(Locale.ROOT).contains("BLOCK");
+                if (malicious) {
+                    String reason = "Clasificador semántico (Input Guard) detectó intento de extracción: "
+                            + verdictRaw.trim();
+                    attackLogService.record(sessionId, "INPUT_GUARD_LLM", message, reason);
+                    log.info("[Input Guard] bloqueado por clasificador LLM sessionId={}", sessionId);
+                    return GuardVerdict.block(reason, "LLM_CLASSIFIER");
+                }
+                return GuardVerdict.allow();
+            } catch (GeminiClientException ex) {
+                lastFailure = ex;
+                log.warn("[Input Guard] fallo del clasificador (intento {}/{}) sessionId={} motivo={}",
+                        attempt, CLASSIFIER_MAX_ATTEMPTS, sessionId, ex.getMessage());
+                if (attempt < CLASSIFIER_MAX_ATTEMPTS) {
+                    sleepBriefly();
+                }
             }
-        } catch (GeminiClientException ex) {
-            log.warn("[Input Guard] clasificador no disponible, fail-open controlado. sessionId={} motivo={}",
-                    sessionId, ex.getMessage());
         }
 
+        return fallbackAfterClassifierFailure(sessionId, message, lastFailure);
+    }
+
+    /**
+     * Tras agotar los reintentos del clasificador semántico, en vez de un fail-open puro se aplica
+     * una regla de respaldo más amplia (y por lo tanto más propensa a falsos positivos) que el
+     * regex principal, para reducir la ventana de bypass del Vector 5 sin bloquear por completo
+     * el servicio ante una falla transitoria del proveedor.
+     */
+    private GuardVerdict fallbackAfterClassifierFailure(String sessionId, String message, GeminiClientException lastFailure) {
+        String normalized = normalize(message);
+        for (String keyword : FALLBACK_RISK_KEYWORDS) {
+            if (normalized.contains(keyword)) {
+                String reason = "Clasificador semántico no disponible tras " + CLASSIFIER_MAX_ATTEMPTS
+                        + " intentos; regla de respaldo detectó término de riesgo ('" + keyword + "')";
+                attackLogService.record(sessionId, "INPUT_GUARD_FALLBACK", message, reason);
+                log.warn("[Input Guard] bloqueado por regla de respaldo sessionId={} keyword={}", sessionId, keyword);
+                return GuardVerdict.block(reason, "FALLBACK_HEURISTIC");
+            }
+        }
+
+        log.warn("[Input Guard] clasificador no disponible, fail-open controlado. sessionId={} motivo={}",
+                sessionId, lastFailure != null ? lastFailure.getMessage() : "desconocido");
         return GuardVerdict.allow();
+    }
+
+    private void sleepBriefly() {
+        try {
+            Thread.sleep(150);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private String normalize(String text) {
