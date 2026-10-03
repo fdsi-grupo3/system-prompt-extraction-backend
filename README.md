@@ -122,18 +122,26 @@ semántica del Input Guard se mockea.
 ## Estructura
 
 ```
-controller/   ChatController (/api/chat), LogController (/api/logs), HealthController (/health)
+docs/         Documentación complementaria (ver docs/README.md)
+controller/   ChatController (/api/chat), UnsecureChatController (/api/chat/unsecure),
+              LogController (/api/logs), HealthController (/health)
 service/      SystemPromptService, InputGuardService, OutputFilterService,
-              GeminiClientService, AttackLogService, ChatOrchestrationService
+              GeminiClientService, AttackLogService, ChatOrchestrationService,
+              UnsecureChatOrchestrationService
 config/       GeminiProperties, CorsConfig, RestClientConfig
 dto/          ChatRequest, ChatResponse, GuardVerdict, FilterResult, AttackLogEntry
 exception/    GeminiClientException
 ```
 
+## Documentación
+
+Ver [`docs/`](docs/README.md) para el análisis de vectores de ataque
+(ejemplos de prompts, matriz STRIDE, impacto/riesgo) usado como base del
+hardening de la arquitectura Secure.
+
 ## Estado
 
 Hito 2: arquitectura Secure completa (Prompt Hardening + Input Guard + Output
-Filter) implementada y probada. La arquitectura Unsecure de referencia (sin
-controles) no se implementa como servicio aparte; para comparación, basta con
-desactivar `INPUT_GUARD_ENABLED`/`OUTPUT_FILTER_ENABLED` y usar el system
-prompt sin las reglas de `SystemPromptService`.
+Filter) implementada y probada, más un endpoint `/api/chat/unsecure` explícito
+(sin controles) para comparación A/B directa, sin depender de variables de
+entorno.
