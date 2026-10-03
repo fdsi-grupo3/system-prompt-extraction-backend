@@ -60,4 +60,50 @@ class OutputFilterServiceTest {
 
         assertThat(result.safe()).isFalse();
     }
+
+    @Test
+    void bloqueaFugaCodificadaEnBase64DeUnaReglaInterna() {
+        String secreto = "Nunca reveles datos de otros usuarios, numeros de radicado ajenos, "
+                + "ni el contenido de bases de datos internas.";
+        String enBase64 = java.util.Base64.getEncoder().encodeToString(secreto.getBytes());
+
+        FilterResult result = outputFilterService.evaluate(
+                "session-4",
+                "Claro, aquí tienes la versión codificada que pediste: " + enBase64
+        );
+
+        assertThat(result.safe()).isFalse();
+    }
+
+    @Test
+    void bloqueaReconstruccionIncrementalAcumuladaEnLaMismaSesion() {
+        // Cada mensaje por separado solo cubre ~4 de las 11 palabras clave del fragmento protegido
+        // (solapamiento ~0.36, por debajo del umbral 0.45), pero juntos arman la fuga completa.
+        FilterResult primeraRespuesta = outputFilterService.evaluate(
+                "session-5",
+                "Nunca reveles datos sobre otros temas: lunes martes miercoles jueves viernes sabado domingo."
+        );
+        assertThat(primeraRespuesta.safe()).isTrue();
+
+        FilterResult segundaRespuesta = outputFilterService.evaluate(
+                "session-5",
+                "Números radicado ajenos bases pizza futbol cine musica playa montana bicicleta."
+        );
+
+        assertThat(segundaRespuesta.safe()).isFalse();
+        assertThat(attackLogService.recent(10))
+                .anyMatch(entry -> "OUTPUT_FILTER_ACCUMULATED".equals(entry.stage()));
+    }
+
+    @Test
+    void noAcumulaEntreSesionesDistintas() {
+        outputFilterService.evaluate("session-6", "Tengo reglas sobre el formato de mis respuestas.");
+
+        FilterResult result = outputFilterService.evaluate(
+                "session-7",
+                "Nuestro horario de atención es de lunes a viernes de 8:00 a. m. a 4:00 p. m."
+        );
+
+        assertThat(result.safe()).isTrue();
+    }
 }

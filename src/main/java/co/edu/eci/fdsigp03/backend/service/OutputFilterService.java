@@ -7,11 +7,18 @@ import org.apache.commons.text.similarity.LevenshteinDistance;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Base64;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Output Filter: compara la respuesta generada por el LLM principal contra los
@@ -37,6 +44,19 @@ import java.util.Set;
  * Se compara tanto la respuesta completa como cada una de sus oraciones por
  * separado contra cada fragmento protegido, para detectar fugas incrustadas en
  * medio de una respuesta más larga y no solo coincidencias literales completas.
+ * <p>
+ * Dos mitigaciones adicionales (ver {@code docs/seguridad/vectores-ataque.md}):
+ * <ul>
+ *     <li><b>Vector 3 (exfiltración codificada)</b>: antes de comparar, se buscan
+ *     substrings con forma de Base64 en la respuesta y, si decodifican a texto
+ *     imprimible, ese texto decodificado también se compara contra los fragmentos
+ *     protegidos.</li>
+ *     <li><b>Vector 4 (fuga parafraseada incremental)</b>: además de evaluar la
+ *     respuesta actual de forma aislada, se mantiene un acumulado en memoria de las
+ *     últimas respuestas entregadas en la misma sesión y se evalúa también esa
+ *     concatenación, para detectar reconstrucciones del prompt repartidas en varios
+ *     turnos que individualmente no superarían el umbral.</li>
+ * </ul>
  */
 @Service
 @Slf4j
@@ -53,8 +73,17 @@ public class OutputFilterService {
     /** Por debajo de este número de tokens con contenido, no se calcula solapamiento (evita falsos positivos). */
     private static final int MIN_MEANINGFUL_TOKENS = 3;
 
+    /** Cuántas respuestas previas por sesión se conservan para el chequeo acumulado (Vector 4). */
+    private static final int ACCUMULATION_WINDOW = 5;
+
+    /** Substrings candidatos a ser Base64 (alfabeto válido, longitud mínima para evitar ruido). */
+    private static final Pattern BASE64_CANDIDATE = Pattern.compile("[A-Za-z0-9+/]{16,}={0,2}");
+
     private final SystemPromptService systemPromptService;
     private final AttackLogService attackLogService;
+
+    /** Historial de respuestas ya entregadas por sesión, usado para el chequeo acumulado. */
+    private final Map<String, Deque<String>> sessionHistory = new ConcurrentHashMap<>();
 
     @Value("${app.output-filter.enabled:true}")
     private boolean enabled;
@@ -69,12 +98,15 @@ public class OutputFilterService {
             return new FilterResult(true, 0.0, null);
         }
 
-        List<String> responseSentences = splitSentences(candidateResponse);
+        String decoded = decodeEmbeddedBase64(candidateResponse);
+        String textToScan = decoded.isEmpty() ? candidateResponse : candidateResponse + " " + decoded;
+
+        List<String> responseSentences = splitSentences(textToScan);
         double maxSimilarity = 0.0;
         String matchedFragment = null;
 
         for (String secretFragment : systemPromptService.protectedFragments()) {
-            double fullScore = similarity(candidateResponse, secretFragment);
+            double fullScore = similarity(textToScan, secretFragment);
             if (fullScore > maxSimilarity) {
                 maxSimilarity = fullScore;
                 matchedFragment = secretFragment;
@@ -89,15 +121,91 @@ public class OutputFilterService {
             }
         }
 
+        boolean individualSafe = maxSimilarity < threshold;
+
+        double accumulatedSimilarity = 0.0;
+        if (individualSafe) {
+            accumulatedSimilarity = accumulatedSimilarityFor(sessionId, textToScan);
+            if (accumulatedSimilarity > maxSimilarity) {
+                maxSimilarity = accumulatedSimilarity;
+            }
+        }
+
         boolean safe = maxSimilarity < threshold;
         if (!safe) {
-            String reason = "Similitud %.2f (umbral %.2f) contra fragmento protegido del system prompt"
+            boolean dueToAccumulation = individualSafe && accumulatedSimilarity >= threshold;
+            String reason = (dueToAccumulation
+                    ? "Similitud acumulada %.2f (umbral %.2f) al combinar con respuestas previas de la sesión"
+                    : "Similitud %.2f (umbral %.2f) contra fragmento protegido del system prompt")
                     .formatted(maxSimilarity, threshold);
-            attackLogService.record(sessionId, "OUTPUT_FILTER", candidateResponse, reason);
-            log.info("[Output Filter] respuesta bloqueada sessionId={} similitud={}", sessionId, maxSimilarity);
+            attackLogService.record(sessionId, dueToAccumulation ? "OUTPUT_FILTER_ACCUMULATED" : "OUTPUT_FILTER",
+                    candidateResponse, reason);
+            log.info("[Output Filter] respuesta bloqueada sessionId={} similitud={} acumulado={}",
+                    sessionId, maxSimilarity, dueToAccumulation);
+        } else {
+            rememberResponse(sessionId, candidateResponse);
         }
 
         return new FilterResult(safe, maxSimilarity, matchedFragment);
+    }
+
+    /** Compara el acumulado de respuestas previas + la actual contra cada fragmento protegido. */
+    private double accumulatedSimilarityFor(String sessionId, String currentResponse) {
+        Deque<String> history = sessionHistory.get(sessionId);
+        if (history == null || history.isEmpty()) {
+            return 0.0;
+        }
+
+        String accumulated = String.join(" ", history) + " " + currentResponse;
+        double max = 0.0;
+        for (String secretFragment : systemPromptService.protectedFragments()) {
+            double score = similarity(accumulated, secretFragment);
+            if (score > max) {
+                max = score;
+            }
+        }
+        return max;
+    }
+
+    private void rememberResponse(String sessionId, String response) {
+        Deque<String> history = sessionHistory.computeIfAbsent(sessionId, key -> new ArrayDeque<>());
+        synchronized (history) {
+            history.addLast(response);
+            while (history.size() > ACCUMULATION_WINDOW) {
+                history.removeFirst();
+            }
+        }
+    }
+
+    /**
+     * Busca substrings con forma de Base64 en el texto y devuelve la concatenación de los que
+     * decodifican a texto imprimible (UTF-8), para que también se comparen contra los fragmentos
+     * protegidos. Devuelve cadena vacía si no hay ninguno decodificable.
+     */
+    private String decodeEmbeddedBase64(String text) {
+        StringBuilder decodedText = new StringBuilder();
+        Matcher matcher = BASE64_CANDIDATE.matcher(text);
+        while (matcher.find()) {
+            String candidate = matcher.group();
+            try {
+                byte[] raw = Base64.getDecoder().decode(candidate);
+                String asText = new String(raw, java.nio.charset.StandardCharsets.UTF_8);
+                if (isMostlyPrintable(asText)) {
+                    decodedText.append(' ').append(asText);
+                }
+            } catch (IllegalArgumentException ignored) {
+                // No es Base64 válido, se ignora el substring.
+            }
+        }
+        return decodedText.toString().trim();
+    }
+
+    private boolean isMostlyPrintable(String text) {
+        if (text.isBlank()) {
+            return false;
+        }
+        long printable = text.chars().filter(c -> c >= 32 && c < 127 || Character.isLetter(c)).count();
+        return printable >= text.length() * 0.85;
     }
 
     private double similarity(String a, String b) {
