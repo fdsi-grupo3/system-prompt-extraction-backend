@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Orquesta el flujo completo de la arquitectura Secure para una solicitud de chat:
@@ -28,6 +29,17 @@ public class ChatOrchestrationService {
 
     private static final double MAIN_LLM_TEMPERATURE = 0.4;
     private static final int MAIN_LLM_MAX_TOKENS = 800;
+
+    /**
+     * Formato esperado de sessionId (UUID v4, el mismo que genera el frontend y este
+     * mismo servicio). Un sessionId que no cumpla este formato se descarta y se genera uno
+     * nuevo, en vez de usarlo tal cual (Vector 8): el Output Filter mantiene un acumulado de
+     * divulgación por sessionId (ver OutputFilterService), así que aceptar cualquier cadena
+     * arbitraria del cliente permitiría a un atacante fijar o adivinar el sessionId de otra
+     * persona para heredar (o contaminar) su historial acumulado.
+     */
+    private static final Pattern SESSION_ID_FORMAT = Pattern.compile(
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
     private final InputGuardService inputGuardService;
     private final OutputFilterService outputFilterService;
@@ -81,8 +93,13 @@ public class ChatOrchestrationService {
     }
 
     private String resolveSessionId(String requestSessionId) {
-        return (requestSessionId == null || requestSessionId.isBlank())
-                ? UUID.randomUUID().toString()
-                : requestSessionId;
+        boolean validFormat = requestSessionId != null && SESSION_ID_FORMAT.matcher(requestSessionId).matches();
+        if (!validFormat) {
+            if (requestSessionId != null && !requestSessionId.isBlank()) {
+                log.warn("[Chat] sessionId con formato inválido descartado, se genera uno nuevo");
+            }
+            return UUID.randomUUID().toString();
+        }
+        return requestSessionId;
     }
 }

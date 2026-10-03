@@ -9,8 +9,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.text.Normalizer;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -106,6 +110,37 @@ public class InputGuardService {
     );
 
     /**
+     * Verbos de extracción (en ambos idiomas) para la capa de detección por combinación
+     * de palabras clave (Vector 7): no exige adyacencia ni un idioma único, a diferencia
+     * de los patrones regex de {@link #OVERRIDE_PATTERNS}.
+     */
+    private static final Set<String> TRIGGER_VERBS = Set.of(
+            "ignora", "ignores", "ignore", "olvida", "olvidate", "disregard", "forget",
+            "muestra", "muestrame", "revela", "revelame", "repite", "repiteme", "reveal",
+            "show", "print", "output", "dime", "traduce", "translate", "codifica", "encode",
+            "parafrasea", "resume", "resumeme"
+    );
+
+    /**
+     * Sustantivos objetivo de la extracción. Deliberadamente más acotado que los verbos
+     * (no incluye "reglas" genérico) para no disparar falsos positivos con preguntas
+     * institucionales legítimas sobre reglas de un trámite.
+     */
+    private static final Set<String> TRIGGER_NOUNS = Set.of(
+            "instrucciones", "instruction", "instructions", "prompt", "jailbreak"
+    );
+
+    /** Caracteres invisibles usados para partir palabras clave y evadir el regex (Vector 6). */
+    private static final Pattern INVISIBLE_CHARS = Pattern.compile("[\\u200B\\u200C\\u200D\\u00AD\\uFEFF]");
+
+    /** Homoglifos (cirílico/griego) visualmente idénticos a letras latinas, usados para evadir el regex (Vector 6). */
+    private static final Map<Character, Character> HOMOGLYPHS = Map.ofEntries(
+            Map.entry('а', 'a'), Map.entry('е', 'e'), Map.entry('і', 'i'), Map.entry('о', 'o'),
+            Map.entry('р', 'p'), Map.entry('с', 'c'), Map.entry('у', 'y'), Map.entry('х', 'x'),
+            Map.entry('ѕ', 's'), Map.entry('ԛ', 'q'), Map.entry('ԑ', 'e'), Map.entry('ⅰ', 'i')
+    );
+
+    /**
      * Evalúa un mensaje de usuario y determina si puede continuar hacia el LLM principal.
      */
     public GuardVerdict evaluate(String sessionId, String message) {
@@ -125,7 +160,37 @@ public class InputGuardService {
             }
         }
 
+        String triggerCombo = findTriggerCombo(normalized);
+        if (triggerCombo != null) {
+            String reason = "Combinación de palabras clave de extracción detectada (verbo+objetivo, "
+                    + "sin exigir orden ni un único idioma): " + triggerCombo;
+            attackLogService.record(sessionId, "INPUT_GUARD_KEYWORD_COMBO", message, reason);
+            log.info("[Input Guard] bloqueado por combinación de palabras clave sessionId={} combo={}",
+                    sessionId, triggerCombo);
+            return GuardVerdict.block(reason, "KEYWORD_COMBO");
+        }
+
         return evaluateWithClassifier(sessionId, message);
+    }
+
+    /**
+     * Detecta mensajes que combinan un verbo de extracción con un sustantivo objetivo en
+     * cualquier orden, incluso mezclando idiomas dentro del mismo mensaje (Vector 7: la
+     * adyacencia estricta de {@link #OVERRIDE_PATTERNS} no cubre "las instrucciones, ignóralas"
+     * ni "please instructions ignora"). Devuelve el par detectado o {@code null} si no aplica.
+     */
+    private String findTriggerCombo(String normalized) {
+        Set<String> tokens = new HashSet<>(Arrays.asList(normalized.split("[^a-z0-9]+")));
+
+        String matchedVerb = TRIGGER_VERBS.stream().filter(tokens::contains).findFirst().orElse(null);
+        if (matchedVerb == null) {
+            return null;
+        }
+        String matchedNoun = TRIGGER_NOUNS.stream().filter(tokens::contains).findFirst().orElse(null);
+        if (matchedNoun == null) {
+            return null;
+        }
+        return matchedVerb + " + " + matchedNoun;
     }
 
     /**
@@ -200,9 +265,24 @@ public class InputGuardService {
         }
     }
 
+    /**
+     * Normaliza el mensaje antes de evaluarlo: quita acentos, caracteres invisibles
+     * (zero-width space/joiner, BOM, soft hyphen) y sustituye homoglifos cirílicos/griegos
+     * por su equivalente latino. Sin esto, un atacante podía partir una palabra clave con
+     * un carácter invisible (p. ej. "ignor​a") o sustituir letras por homoglifos
+     * idénticos a la vista para evadir tanto el regex como la combinación de palabras clave
+     * (Vector 6).
+     */
     private String normalize(String text) {
-        String noAccents = Normalizer.normalize(text, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
-        return noAccents.toLowerCase(Locale.ROOT);
+        String withoutInvisible = INVISIBLE_CHARS.matcher(text).replaceAll("");
+        String noAccents = Normalizer.normalize(withoutInvisible, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        String lower = noAccents.toLowerCase(Locale.ROOT);
+
+        StringBuilder withoutHomoglyphs = new StringBuilder(lower.length());
+        for (char c : lower.toCharArray()) {
+            withoutHomoglyphs.append(HOMOGLYPHS.getOrDefault(c, c));
+        }
+        return withoutHomoglyphs.toString();
     }
 
     private static Pattern pattern(String regex) {
