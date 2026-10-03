@@ -6,8 +6,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 /**
- * Endpoint de verificación básica. El endpoint /chat (Unsecure/Secure)
- * se agrega en el Hito 2, junto con los controles de Input Guard y Output Filter.
+ * Endpoint de verificación básica. La lógica de negocio vive en POST /api/chat,
+ * con los controles de Prompt Hardening, Input Guard y Output Filter (arquitectura Secure).
  */
 @RestController
 public class HealthController {
