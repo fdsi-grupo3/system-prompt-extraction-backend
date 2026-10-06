@@ -25,6 +25,17 @@ app:
     enabled: ${INPUT_GUARD_ENABLED:true}
   output-filter:
     enabled: ${OUTPUT_FILTER_ENABLED:true}
-    # Similitud (0-1) contra fragmentos protegidos del system prompt a partir de la cual
-    # se bloquea la respuesta. Ajustable según la tasa de falsos positivos observada en T06.
+    # Detector: ml (clasificador de IA propio, con fallback léxico si no está disponible),
+    # lexical (detector original por similitud) o hybrid (bloquea si cualquiera detecta fuga).
+    engine: ${OUTPUT_FILTER_ENGINE:ml}
+    # Similitud (0-1) del detector LÉXICO contra fragmentos protegidos a partir de la cual
+    # se bloquea la respuesta. El umbral del detector de IA vive en el propio servicio
+    # (calibrado en validación, ver filter_config.json del modelo).
     threshold: ${OUTPUT_FILTER_THRESHOLD:0.45}
+    ml:
+      # Servicio FastAPI del proyecto system-prompt-extraction-ml-filter.
+      base-url: ${OUTPUT_FILTER_ML_URL:http://localhost:8001}
+      connect-timeout-ms: ${OUTPUT_FILTER_ML_CONNECT_TIMEOUT_MS:500}
+      read-timeout-ms: ${OUTPUT_FILTER_ML_READ_TIMEOUT_MS:2000}
+      # Secreto compartido (header X-Filter-Token); vacío = sin autenticación.
+      api-token: ${OUTPUT_FILTER_ML_API_TOKEN:}

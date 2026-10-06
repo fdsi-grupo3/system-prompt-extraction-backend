@@ -11,8 +11,10 @@ misma organización: `fdsi-gp03-frontend`.
 
 - Java 21
 - Spring Boot 3.3 (Web, Validation)
-- Apache Commons Text (Levenshtein + solapamiento léxico para el Output Filter)
+- Apache Commons Text (Levenshtein + solapamiento léxico para el detector léxico de respaldo)
 - Maven
+- Output Filter de IA: servicio Python (FastAPI + ONNX Runtime) en el proyecto
+  hermano [`system-prompt-extraction-ml-filter`](../system-prompt-extraction-ml-filter/README.md)
 
 ## Arquitectura Secure implementada
 
@@ -24,7 +26,8 @@ Usuario → Frontend (React) → POST /api/chat (Spring Boot)
                                    ▼
                     2) LLM principal (system prompt "sandwich", API Key "main")
                                    │
-                    3) Output Filter (similitud léxica vs fragmentos protegidos)
+                    3) Output Filter → clasificador de IA propio (FastAPI :8001, ONNX)
+                                   │  si no responde → detector léxico (sin fail-open)
                                    │  bloqueado → respuesta genérica + log
                                    ▼
                               Respuesta al usuario
@@ -40,12 +43,17 @@ Usuario → Frontend (React) → POST /api/chat (Spring Boot)
   para pedirle a Gemini que clasifique el mensaje como `ALLOW`/`BLOCK`. Si el
   clasificador falla técnicamente, aplica fail-open controlado (el Output Filter
   sigue siendo la segunda barrera).
-- **Output Filter** — `service/OutputFilterService.java`: compara la respuesta
-  del LLM principal contra fragmentos protegidos del system prompt real usando
-  un coeficiente de solapamiento léxico por palabras (no el Jaccard a nivel de
-  carácter de Commons Text, que resulta inútil para texto en lenguaje natural)
-  más Levenshtein normalizado, para detectar tanto copias literales como fugas
-  parafraseadas.
+- **Output Filter** — `service/OutputFilterService.java`: orquesta el detector
+  elegido con `OUTPUT_FILTER_ENGINE` y mantiene el acumulado de respuestas por
+  sesión (Vector 4).
+  - `ml` (default) — `service/MlFilterClient.java`: llama al clasificador de IA
+    propio (cross-encoder multilingüe fine-tuned, independiente de Gemini), que
+    distingue una respuesta que *aplica* una regla de una que la *revela*, aunque
+    venga parafraseada, traducida, codificada o repartida en varios turnos. Si el
+    servicio no responde, se degrada al detector léxico (nunca fail-open).
+  - `lexical` — `service/LexicalLeakDetector.java`: el detector original
+    (solapamiento por palabras + Levenshtein + decodificación Base64).
+  - `hybrid`: bloquea si cualquiera de los dos detecta fuga.
 - **Logging** — `service/AttackLogService.java` + `GET /api/logs`: registro en
   memoria de los intentos bloqueados, para poder auditar el experimento (T01-T06).
 
@@ -67,7 +75,11 @@ Variables de entorno (ver `src/main/resources/application.yml`):
 | `FRONTEND_URL`            | Origen permitido para CORS                           | `http://localhost:5173`   |
 | `INPUT_GUARD_ENABLED`     | Activa/desactiva el Input Guard (para A/B testing)   | `true`                    |
 | `OUTPUT_FILTER_ENABLED`   | Activa/desactiva el Output Filter                    | `true`                    |
-| `OUTPUT_FILTER_THRESHOLD` | Umbral de similitud (0-1) para bloquear una respuesta | `0.45`                    |
+| `OUTPUT_FILTER_ENGINE`    | Detector: `ml`, `lexical` o `hybrid`                 | `ml`                      |
+| `OUTPUT_FILTER_THRESHOLD` | Umbral del detector **léxico** (0-1)                 | `0.45`                    |
+| `OUTPUT_FILTER_ML_URL`    | URL del servicio de IA                               | `http://localhost:8001`   |
+| `OUTPUT_FILTER_ML_CONNECT_TIMEOUT_MS` / `_READ_TIMEOUT_MS` | Timeouts hacia el servicio de IA | `500` / `2000` |
+| `OUTPUT_FILTER_ML_API_TOKEN` | Secreto compartido (header `X-Filter-Token`)      | *(vacío)*                 |
 
 > Usa **dos API keys de Gemini distintas** (pueden ser proyectos/keys separados
 > en Google AI Studio) para mantener el canal de "juez de seguridad" desacoplado
@@ -140,6 +152,11 @@ Ver [`docs/`](docs/README.md) para el análisis de vectores de ataque
 hardening de la arquitectura Secure.
 
 ## Estado
+
+Output Filter con IA propia: el backend consume el clasificador del proyecto
+`system-prompt-extraction-ml-filter` (`OUTPUT_FILTER_ENGINE=ml`, con fallback
+léxico). Resultados, iteraciones y pendientes en
+[`../AVANCE_OUTPUT_FILTER_IA.md`](../AVANCE_OUTPUT_FILTER_IA.md).
 
 Hito 2: arquitectura Secure completa (Prompt Hardening + Input Guard + Output
 Filter) implementada y probada, más un endpoint `/api/chat/unsecure` explícito
