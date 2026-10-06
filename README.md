@@ -14,7 +14,7 @@ misma organización: `fdsi-gp03-frontend`.
 - Apache Commons Text (Levenshtein + solapamiento léxico para el detector léxico de respaldo)
 - Maven
 - Output Filter de IA: servicio Python (FastAPI + ONNX Runtime) en el proyecto
-  hermano [`system-prompt-extraction-ml-filter`](../system-prompt-extraction-ml-filter/README.md)
+  hermano [`system-prompt-extraction-ml-filter`](https://github.com/fdsi-grupo3/system-prompt-extraction-ml-filter)
 
 ## Arquitectura Secure implementada
 
@@ -156,7 +156,7 @@ hardening de la arquitectura Secure.
 Output Filter con IA propia: el backend consume el clasificador del proyecto
 `system-prompt-extraction-ml-filter` (`OUTPUT_FILTER_ENGINE=ml`, con fallback
 léxico). Resultados, iteraciones y pendientes en
-[`../AVANCE_OUTPUT_FILTER_IA.md`](../AVANCE_OUTPUT_FILTER_IA.md).
+[`docs/arquitectura/AVANCE_OUTPUT_FILTER_IA.md`](docs/arquitectura/AVANCE_OUTPUT_FILTER_IA.md).
 
 Hito 2: arquitectura Secure completa (Prompt Hardening + Input Guard + Output
 Filter) implementada y probada, más un endpoint `/api/chat/unsecure` explícito
