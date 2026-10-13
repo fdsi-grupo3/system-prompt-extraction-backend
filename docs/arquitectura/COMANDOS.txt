@@ -1,5 +1,5 @@
 ================================================================================
- FDSI-GP-03 · COMANDOS DE EJECUCIÓN Y PRUEBA
+ FDSI-GP-03 · COMANDOS DE EJECUCIÓN Y PRUEBA PROGRAMA
 ================================================================================
  Rutas relativas a la raíz del workspace: ~/Projects/FDSI
    system-prompt-extraction-backend/     Spring Boot (Java 21)        :8080
